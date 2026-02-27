@@ -6,9 +6,13 @@
 #import <stdio.h>
 #import <stdint.h>
 #import <stdlib.h>
+#import <stdarg.h>
+#import <sys/syscall.h>
 #import <string.h>
 #import <sys/sysctl.h>
 #import <sys/time.h>
+#import <mach/clock.h>
+#import <mach/mach.h>
 #import <time.h>
 #import <unistd.h>
 
@@ -20,6 +24,8 @@ extern int clock_gettime(clockid_t, struct timespec *);
 extern uint64_t clock_gettime_nsec_np(clockid_t);
 extern int sysctl(int *, u_int, void *, size_t *, void *, size_t);
 extern int sysctlbyname(const char *, void *, size_t *, void *, size_t);
+extern int syscall(int, ...);
+extern kern_return_t clock_get_time(clock_serv_t, mach_timespec_t *);
 
 static void BackwardsTimeTouchFile(const char *fileName);
 static void BackwardsTimeTouchOnce(volatile int *flag, const char *fileName);
@@ -97,6 +103,20 @@ static void BackwardsTimeAdjustTimeval(struct timeval *tv) {
     if (tv->tv_usec < 0) {
         tv->tv_usec += 1000000;
         tv->tv_sec -= 1;
+    }
+}
+
+static void BackwardsTimeAdjustTimespec(struct timespec *tp) {
+    if (!tp) {
+        return;
+    }
+    long long nsec = (long long)tp->tv_sec * 1000000000LL + (long long)tp->tv_nsec;
+    nsec -= (long long)(BackwardsTimeOffsetSeconds() * 1000000000.0);
+    tp->tv_sec = (time_t)(nsec / 1000000000LL);
+    tp->tv_nsec = (long)(nsec % 1000000000LL);
+    if (tp->tv_nsec < 0) {
+        tp->tv_nsec += 1000000000L;
+        tp->tv_sec -= 1;
     }
 }
 
@@ -189,6 +209,77 @@ static uint64_t bt_clock_gettime_nsec_np(clockid_t clk_id) {
     return nsec;
 }
 
+typedef int (*syscall_func_t)(int, ...);
+static syscall_func_t orig_syscall;
+static int bt_syscall(int number, ...) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_syscall");
+
+    if (!orig_syscall) {
+        orig_syscall = (syscall_func_t)dlsym(RTLD_NEXT, "syscall");
+    }
+    if (!orig_syscall) {
+        return -1;
+    }
+
+    va_list args;
+    va_start(args, number);
+
+#if defined(SYS_gettimeofday)
+    if (number == SYS_gettimeofday) {
+        struct timeval *tv = va_arg(args, struct timeval *);
+        void *tz = va_arg(args, void *);
+        va_end(args);
+        int result = orig_syscall(number, tv, tz);
+        if (result == 0 && tv) {
+            BackwardsTimeTouchFile("backwardstime_hit_syscall_gettimeofday");
+            BackwardsTimeAdjustTimeval(tv);
+        }
+        return result;
+    }
+#endif
+
+#if defined(SYS_clock_gettime)
+    if (number == SYS_clock_gettime) {
+        clockid_t clk_id = (clockid_t)va_arg(args, int);
+        struct timespec *tp = va_arg(args, struct timespec *);
+        va_end(args);
+        int result = orig_syscall(number, clk_id, tp);
+        if (result == 0 && tp) {
+            BackwardsTimeTouchFile("backwardstime_hit_syscall_clock_gettime");
+            if (clk_id == CLOCK_REALTIME
+#ifdef CLOCK_REALTIME_COARSE
+                || clk_id == CLOCK_REALTIME_COARSE
+#endif
+            ) {
+                BackwardsTimeAdjustTimespec(tp);
+            }
+        }
+        return result;
+    }
+#endif
+
+    va_end(args);
+    return orig_syscall(number);
+}
+
+static kern_return_t (*orig_clock_get_time)(clock_serv_t, mach_timespec_t *);
+static kern_return_t bt_clock_get_time(clock_serv_t clock_serv, mach_timespec_t *cur_time) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_mach_clock_get_time");
+    if (!orig_clock_get_time) {
+        orig_clock_get_time = (kern_return_t (*)(clock_serv_t, mach_timespec_t *))dlsym(RTLD_NEXT, "clock_get_time");
+    }
+    kern_return_t kr = orig_clock_get_time ? orig_clock_get_time(clock_serv, cur_time) : KERN_FAILURE;
+    if (kr == KERN_SUCCESS && cur_time) {
+        if (cur_time->tv_sec > 946684800) {
+            BackwardsTimeTouchFile("backwardstime_hit_mach_clock_get_time_wall");
+            cur_time->tv_sec -= (unsigned int)BackwardsTimeOffsetSeconds();
+        }
+    }
+    return kr;
+}
+
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int bt_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     static volatile int touched = 0;
@@ -243,6 +334,8 @@ DYLD_INTERPOSE(bt_clock_gettime, clock_gettime)
 DYLD_INTERPOSE(bt_clock_gettime_nsec_np, clock_gettime_nsec_np)
 DYLD_INTERPOSE(bt_sysctl, sysctl)
 DYLD_INTERPOSE(bt_sysctlbyname, sysctlbyname)
+DYLD_INTERPOSE(bt_syscall, syscall)
+DYLD_INTERPOSE(bt_clock_get_time, clock_get_time)
 
 __attribute__((constructor))
 static void BackwardsTimeInit(void) {
