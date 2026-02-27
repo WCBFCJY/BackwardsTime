@@ -39,7 +39,21 @@ static NSDate *bt_NSDate_date(id self, SEL _cmd) {
     static volatile int touched = 0;
     BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_date");
     NSDate *realDate = orig_NSDate_date(self, _cmd);
-    return [realDate dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
+    NSDate *adjusted = [realDate dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
+    static volatile int probed = 0;
+    char buf[256];
+    int n = snprintf(
+        buf,
+        sizeof(buf),
+        "real=%.6f\nadjusted=%.6f\ndelta=%.0f\n",
+        [realDate timeIntervalSince1970],
+        [adjusted timeIntervalSince1970],
+        BackwardsTimeOffsetSeconds()
+    );
+    if (n > 0) {
+        BackwardsTimeWriteOnce(&probed, "backwardstime_probe_NSDate_date.txt", buf);
+    }
+    return adjusted;
 }
 
 static NSDate *(*orig_NSDate_now)(id self, SEL _cmd);
@@ -47,7 +61,21 @@ static NSDate *bt_NSDate_now(id self, SEL _cmd) {
     static volatile int touched = 0;
     BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_now");
     NSDate *realDate = orig_NSDate_now(self, _cmd);
-    return [realDate dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
+    NSDate *adjusted = [realDate dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
+    static volatile int probed = 0;
+    char buf[256];
+    int n = snprintf(
+        buf,
+        sizeof(buf),
+        "real=%.6f\nadjusted=%.6f\ndelta=%.0f\n",
+        [realDate timeIntervalSince1970],
+        [adjusted timeIntervalSince1970],
+        BackwardsTimeOffsetSeconds()
+    );
+    if (n > 0) {
+        BackwardsTimeWriteOnce(&probed, "backwardstime_probe_NSDate_now.txt", buf);
+    }
+    return adjusted;
 }
 
 static void HookClassMethod(Class cls, SEL selector, IMP replacement, IMP *originalOut) {
@@ -90,6 +118,28 @@ static void BackwardsTimeTouchOnce(volatile int *flag, const char *fileName) {
     if (__sync_bool_compare_and_swap(flag, 0, 1)) {
         BackwardsTimeTouchFile(fileName);
     }
+}
+
+static void BackwardsTimeWriteOnce(volatile int *flag, const char *fileName, const char *content) {
+    if (!__sync_bool_compare_and_swap(flag, 0, 1)) {
+        return;
+    }
+
+    char path[PATH_MAX];
+    const char *tmp = BackwardsTimeTmpDir();
+    int written = snprintf(path, sizeof(path), "%s%s", tmp, fileName);
+    if (written <= 0 || (size_t)written >= sizeof(path)) {
+        return;
+    }
+
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        return;
+    }
+    if (content) {
+        (void)write(fd, content, (size_t)strlen(content));
+    }
+    close(fd);
 }
 
 static void BackwardsTimeAdjustTimeval(struct timeval *tv) {
