@@ -4,6 +4,7 @@
 #import <dlfcn.h>
 #import <fcntl.h>
 #import <limits.h>
+#import <math.h>
 #import <stdio.h>
 #import <stdint.h>
 #import <stdlib.h>
@@ -82,28 +83,40 @@ static NSTimeInterval bt_NSDate_timeIntervalSinceReferenceDate(id self, SEL _cmd
     return real - BackwardsTimeOffsetSeconds();
 }
 
-static id (*orig___NSDate_init)(id self, SEL _cmd);
-static id bt___NSDate_init(id self, SEL _cmd) {
-    static volatile int touched = 0;
-    BackwardsTimeTouchOnce(&touched, "backwardstime_hit___NSDate_init");
-    id real = orig___NSDate_init ? orig___NSDate_init(self, _cmd) : self;
-    if (![real isKindOfClass:[NSDate class]]) {
-        return real;
+static time_t BackwardsTimeRealUnixTime(void) {
+    static time_t (*real_time)(time_t *) = NULL;
+    if (!real_time) {
+        real_time = (time_t (*)(time_t *))dlsym(RTLD_NEXT, "time");
     }
-    NSDate *adjusted = [(NSDate *)real dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
-    return (__bridge_transfer id)CFRetain((__bridge CFTypeRef)adjusted);
+    if (!real_time) {
+        return 0;
+    }
+    return real_time(NULL);
 }
 
-static id (*orig_NSConcreteDate_init)(id self, SEL _cmd);
-static id bt_NSConcreteDate_init(id self, SEL _cmd) {
+static NSTimeInterval (*orig_NSDate_timeIntervalSince1970)(id self, SEL _cmd);
+static NSTimeInterval bt_NSDate_timeIntervalSince1970(id self, SEL _cmd) {
     static volatile int touched = 0;
-    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSConcreteDate_init");
-    id real = orig_NSConcreteDate_init ? orig_NSConcreteDate_init(self, _cmd) : self;
-    if (![real isKindOfClass:[NSDate class]]) {
-        return real;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_timeIntervalSince1970");
+    NSTimeInterval real = orig_NSDate_timeIntervalSince1970 ? orig_NSDate_timeIntervalSince1970(self, _cmd) : 0;
+    NSTimeInterval now = (NSTimeInterval)BackwardsTimeRealUnixTime();
+    if (now > 0 && fabs(real - now) < 10.0) {
+        return real - BackwardsTimeOffsetSeconds();
     }
-    NSDate *adjusted = [(NSDate *)real dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
-    return (__bridge_transfer id)CFRetain((__bridge CFTypeRef)adjusted);
+    return real;
+}
+
+static NSTimeInterval (*orig_NSDate_instanceTimeIntervalSinceReferenceDate)(id self, SEL _cmd);
+static NSTimeInterval bt_NSDate_instanceTimeIntervalSinceReferenceDate(id self, SEL _cmd) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_instanceTimeIntervalSinceReferenceDate");
+    NSTimeInterval real = orig_NSDate_instanceTimeIntervalSinceReferenceDate ? orig_NSDate_instanceTimeIntervalSinceReferenceDate(self, _cmd) : 0;
+    NSTimeInterval now = (NSTimeInterval)BackwardsTimeRealUnixTime();
+    NSTimeInterval nowRef = now > 0 ? (now - NSTimeIntervalSince1970) : 0;
+    if (nowRef > 0 && fabs(real - nowRef) < 10.0) {
+        return real - BackwardsTimeOffsetSeconds();
+    }
+    return real;
 }
 
 static void HookClassMethod(Class cls, SEL selector, IMP replacement, IMP *originalOut) {
@@ -359,14 +372,7 @@ static void BackwardsTimeInit(void) {
 
         HookClassMethod(nsDateClass, @selector(timeIntervalSinceReferenceDate), (IMP)bt_NSDate_timeIntervalSinceReferenceDate, (IMP *)&orig_NSDate_timeIntervalSinceReferenceDate);
 
-        Class concrete = objc_getClass("__NSDate");
-        if (concrete) {
-            HookInstanceMethod(concrete, @selector(init), (IMP)bt___NSDate_init, (IMP *)&orig___NSDate_init);
-        }
-
-        Class concrete2 = objc_getClass("NSConcreteDate");
-        if (concrete2) {
-            HookInstanceMethod(concrete2, @selector(init), (IMP)bt_NSConcreteDate_init, (IMP *)&orig_NSConcreteDate_init);
-        }
+        HookInstanceMethod(nsDateClass, @selector(timeIntervalSince1970), (IMP)bt_NSDate_timeIntervalSince1970, (IMP *)&orig_NSDate_timeIntervalSince1970);
+        HookInstanceMethod(nsDateClass, @selector(timeIntervalSinceReferenceDate), (IMP)bt_NSDate_instanceTimeIntervalSinceReferenceDate, (IMP *)&orig_NSDate_instanceTimeIntervalSinceReferenceDate);
     }
 }
