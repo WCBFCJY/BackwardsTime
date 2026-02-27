@@ -23,6 +23,7 @@ extern uint64_t clock_gettime_nsec_np(clockid_t);
 extern int sysctl(int *, u_int, void *, size_t *, void *, size_t);
 extern int sysctlbyname(const char *, void *, size_t *, void *, size_t);
 
+static const char *BackwardsTimeTmpDir(void);
 static void BackwardsTimeTouchFile(const char *fileName);
 static void BackwardsTimeTouchOnce(volatile int *flag, const char *fileName);
 static void BackwardsTimeWriteOnce(volatile int *flag, const char *fileName, const char *content);
@@ -80,7 +81,21 @@ static NSTimeInterval bt_NSDate_timeIntervalSinceReferenceDate(id self, SEL _cmd
     static volatile int touched = 0;
     BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_timeIntervalSinceReferenceDate");
     NSTimeInterval real = orig_NSDate_timeIntervalSinceReferenceDate ? orig_NSDate_timeIntervalSinceReferenceDate(self, _cmd) : 0;
-    return real - BackwardsTimeOffsetSeconds();
+    NSTimeInterval adjusted = real - BackwardsTimeOffsetSeconds();
+    static volatile int probed = 0;
+    char buf[256];
+    int n = snprintf(
+        buf,
+        sizeof(buf),
+        "real=%.6f\nadjusted=%.6f\ndelta=%.0f\n",
+        real,
+        adjusted,
+        BackwardsTimeOffsetSeconds()
+    );
+    if (n > 0) {
+        BackwardsTimeWriteOnce(&probed, "backwardstime_probe_NSDate_timeIntervalSinceReferenceDate_class.txt", buf);
+    }
+    return adjusted;
 }
 
 static time_t BackwardsTimeRealUnixTime(void) {
@@ -100,10 +115,25 @@ static NSTimeInterval bt_NSDate_timeIntervalSince1970(id self, SEL _cmd) {
     BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_timeIntervalSince1970");
     NSTimeInterval real = orig_NSDate_timeIntervalSince1970 ? orig_NSDate_timeIntervalSince1970(self, _cmd) : 0;
     NSTimeInterval now = (NSTimeInterval)BackwardsTimeRealUnixTime();
-    if (now > 0 && fabs(real - now) < 10.0) {
-        return real - BackwardsTimeOffsetSeconds();
+    int shouldAdjust = 1;
+    NSTimeInterval adjusted = real - BackwardsTimeOffsetSeconds();
+    static volatile int probed = 0;
+    char buf[320];
+    int n = snprintf(
+        buf,
+        sizeof(buf),
+        "real=%.6f\nnow=%.6f\ndiff=%.6f\nadjust=%d\nadjusted=%.6f\ndelta=%.0f\n",
+        real,
+        now,
+        fabs(real - now),
+        shouldAdjust ? 1 : 0,
+        adjusted,
+        BackwardsTimeOffsetSeconds()
+    );
+    if (n > 0) {
+        BackwardsTimeWriteOnce(&probed, "backwardstime_probe_NSDate_timeIntervalSince1970.txt", buf);
     }
-    return real;
+    return adjusted;
 }
 
 static NSTimeInterval (*orig_NSDate_instanceTimeIntervalSinceReferenceDate)(id self, SEL _cmd);
@@ -113,10 +143,26 @@ static NSTimeInterval bt_NSDate_instanceTimeIntervalSinceReferenceDate(id self, 
     NSTimeInterval real = orig_NSDate_instanceTimeIntervalSinceReferenceDate ? orig_NSDate_instanceTimeIntervalSinceReferenceDate(self, _cmd) : 0;
     NSTimeInterval now = (NSTimeInterval)BackwardsTimeRealUnixTime();
     NSTimeInterval nowRef = now > 0 ? (now - NSTimeIntervalSince1970) : 0;
-    if (nowRef > 0 && fabs(real - nowRef) < 10.0) {
-        return real - BackwardsTimeOffsetSeconds();
+    int shouldAdjust = 1;
+    NSTimeInterval adjusted = real - BackwardsTimeOffsetSeconds();
+    static volatile int probed = 0;
+    char buf[360];
+    int n = snprintf(
+        buf,
+        sizeof(buf),
+        "real=%.6f\nnow=%.6f\nnowRef=%.6f\ndiff=%.6f\nadjust=%d\nadjusted=%.6f\ndelta=%.0f\n",
+        real,
+        now,
+        nowRef,
+        fabs(real - nowRef),
+        shouldAdjust ? 1 : 0,
+        adjusted,
+        BackwardsTimeOffsetSeconds()
+    );
+    if (n > 0) {
+        BackwardsTimeWriteOnce(&probed, "backwardstime_probe_NSDate_timeIntervalSinceReferenceDate_instance.txt", buf);
     }
-    return real;
+    return adjusted;
 }
 
 static void HookClassMethod(Class cls, SEL selector, IMP replacement, IMP *originalOut) {
