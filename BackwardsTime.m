@@ -18,7 +18,6 @@
 
 typedef double CFAbsoluteTime;
 extern CFAbsoluteTime CFAbsoluteTimeGetCurrent(void);
-extern NSTimeInterval NSTimeIntervalSince1970;
 extern time_t time(time_t *);
 extern int gettimeofday(struct timeval *, void *);
 extern int clock_gettime(clockid_t, struct timespec *);
