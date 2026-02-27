@@ -29,9 +29,11 @@ jobs:
         run: |
           make clean
           make FINALPACKAGE=1
+          mkdir -p dist
+          find .theos/obj -name "*.dylib" -exec cp {} dist/ \;
 
       - name: Upload Dylib Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BackwardsTime-Dylib
-          path: .theos/obj/debug/*.dylib
+          path: dist/*
