@@ -3,8 +3,11 @@
 #import <dlfcn.h>
 #import <fcntl.h>
 #import <limits.h>
+#import <stdio.h>
 #import <stdint.h>
 #import <stdlib.h>
+#import <string.h>
+#import <sys/sysctl.h>
 #import <sys/time.h>
 #import <time.h>
 #import <unistd.h>
@@ -15,6 +18,11 @@ extern time_t time(time_t *);
 extern int gettimeofday(struct timeval *, void *);
 extern int clock_gettime(clockid_t, struct timespec *);
 extern uint64_t clock_gettime_nsec_np(clockid_t);
+extern int sysctl(int *, u_int, void *, size_t *, void *, size_t);
+extern int sysctlbyname(const char *, void *, size_t *, void *, size_t);
+
+static void BackwardsTimeTouchFile(const char *fileName);
+static void BackwardsTimeTouchOnce(volatile int *flag, const char *fileName);
 
 static NSTimeInterval BackwardsTimeOffsetSeconds(void) {
     return 1000.0 * 24.0 * 60.0 * 60.0;
@@ -22,12 +30,16 @@ static NSTimeInterval BackwardsTimeOffsetSeconds(void) {
 
 static NSDate *(*orig_NSDate_date)(id self, SEL _cmd);
 static NSDate *bt_NSDate_date(id self, SEL _cmd) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_date");
     NSDate *realDate = orig_NSDate_date(self, _cmd);
     return [realDate dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
 }
 
 static NSDate *(*orig_NSDate_now)(id self, SEL _cmd);
 static NSDate *bt_NSDate_now(id self, SEL _cmd) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_now");
     NSDate *realDate = orig_NSDate_now(self, _cmd);
     return [realDate dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
 }
@@ -74,6 +86,20 @@ static void BackwardsTimeTouchOnce(volatile int *flag, const char *fileName) {
     }
 }
 
+static void BackwardsTimeAdjustTimeval(struct timeval *tv) {
+    if (!tv) {
+        return;
+    }
+    long long usec = (long long)tv->tv_sec * 1000000LL + (long long)tv->tv_usec;
+    usec -= (long long)(BackwardsTimeOffsetSeconds() * 1000000.0);
+    tv->tv_sec = (time_t)(usec / 1000000LL);
+    tv->tv_usec = (suseconds_t)(usec % 1000000LL);
+    if (tv->tv_usec < 0) {
+        tv->tv_usec += 1000000;
+        tv->tv_sec -= 1;
+    }
+}
+
 static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void);
 static CFAbsoluteTime bt_CFAbsoluteTimeGetCurrent(void) {
     static volatile int touched = 0;
@@ -109,14 +135,7 @@ static int bt_gettimeofday(struct timeval *tv, void *tz) {
     }
     int result = orig_gettimeofday ? orig_gettimeofday(tv, tz) : -1;
     if (result == 0 && tv) {
-        long long usec = (long long)tv->tv_sec * 1000000LL + (long long)tv->tv_usec;
-        usec -= (long long)(BackwardsTimeOffsetSeconds() * 1000000.0);
-        tv->tv_sec = (time_t)(usec / 1000000LL);
-        tv->tv_usec = (suseconds_t)(usec % 1000000LL);
-        if (tv->tv_usec < 0) {
-            tv->tv_usec += 1000000;
-            tv->tv_sec -= 1;
-        }
+        BackwardsTimeAdjustTimeval(tv);
     }
     return result;
 }
@@ -170,6 +189,44 @@ static uint64_t bt_clock_gettime_nsec_np(clockid_t clk_id) {
     return nsec;
 }
 
+static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
+static int bt_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_sysctl");
+    if (!orig_sysctl) {
+        orig_sysctl = (int (*)(int *, u_int, void *, size_t *, void *, size_t))dlsym(RTLD_NEXT, "sysctl");
+    }
+    int result = orig_sysctl ? orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen) : -1;
+    if (result == 0 && oldp && oldlenp && namelen >= 2) {
+        if (name[0] == CTL_KERN && name[1] == KERN_BOOTTIME) {
+            if (*oldlenp >= sizeof(struct timeval)) {
+                BackwardsTimeTouchFile("backwardstime_hit_sysctl_kern_boottime");
+                BackwardsTimeAdjustTimeval((struct timeval *)oldp);
+            }
+        }
+    }
+    return result;
+}
+
+static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
+static int bt_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_sysctlbyname");
+    if (!orig_sysctlbyname) {
+        orig_sysctlbyname = (int (*)(const char *, void *, size_t *, void *, size_t))dlsym(RTLD_NEXT, "sysctlbyname");
+    }
+    int result = orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : -1;
+    if (result == 0 && name && oldp && oldlenp) {
+        if (strcmp(name, "kern.boottime") == 0) {
+            if (*oldlenp >= sizeof(struct timeval)) {
+                BackwardsTimeTouchFile("backwardstime_hit_sysctlbyname_kern_boottime");
+                BackwardsTimeAdjustTimeval((struct timeval *)oldp);
+            }
+        }
+    }
+    return result;
+}
+
 #define DYLD_INTERPOSE(_replacement, _replacee) \
     __attribute__((used)) static struct { \
         const void *replacement; \
@@ -184,6 +241,8 @@ DYLD_INTERPOSE(bt_time, time)
 DYLD_INTERPOSE(bt_gettimeofday, gettimeofday)
 DYLD_INTERPOSE(bt_clock_gettime, clock_gettime)
 DYLD_INTERPOSE(bt_clock_gettime_nsec_np, clock_gettime_nsec_np)
+DYLD_INTERPOSE(bt_sysctl, sysctl)
+DYLD_INTERPOSE(bt_sysctlbyname, sysctlbyname)
 
 __attribute__((constructor))
 static void BackwardsTimeInit(void) {
