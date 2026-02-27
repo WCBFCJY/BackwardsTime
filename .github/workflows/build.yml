@@ -42,10 +42,6 @@ jobs:
           file dist/*.dylib
           lipo -info dist/*.dylib
 
-      - name: Sign Dylib with ldid
-        run: |
-          ldid -S dist/BackwardsTime.dylib
-
       - name: Upload Dylib Artifact
         uses: actions/upload-artifact@v4
         with:
