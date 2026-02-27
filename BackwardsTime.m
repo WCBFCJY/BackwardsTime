@@ -11,13 +11,9 @@
 
 typedef double CFAbsoluteTime;
 extern CFAbsoluteTime CFAbsoluteTimeGetCurrent(void);
-extern CFAbsoluteTime _CFAbsoluteTimeGetCurrent(void);
 extern time_t time(time_t *);
-extern time_t __time(time_t *);
 extern int gettimeofday(struct timeval *, void *);
-extern int __gettimeofday(struct timeval *, void *);
 extern int clock_gettime(clockid_t, struct timespec *);
-extern int __clock_gettime(clockid_t, struct timespec *);
 extern uint64_t clock_gettime_nsec_np(clockid_t);
 
 static NSTimeInterval BackwardsTimeOffsetSeconds(void) {
@@ -89,17 +85,6 @@ static CFAbsoluteTime bt_CFAbsoluteTimeGetCurrent(void) {
     return now - BackwardsTimeOffsetSeconds();
 }
 
-static CFAbsoluteTime (*orig__CFAbsoluteTimeGetCurrent)(void);
-static CFAbsoluteTime bt__CFAbsoluteTimeGetCurrent(void) {
-    static volatile int touched = 0;
-    BackwardsTimeTouchOnce(&touched, "backwardstime_hit__CFAbsoluteTimeGetCurrent");
-    if (!orig__CFAbsoluteTimeGetCurrent) {
-        orig__CFAbsoluteTimeGetCurrent = (CFAbsoluteTime (*)(void))dlsym(RTLD_NEXT, "_CFAbsoluteTimeGetCurrent");
-    }
-    CFAbsoluteTime now = orig__CFAbsoluteTimeGetCurrent ? orig__CFAbsoluteTimeGetCurrent() : 0;
-    return now - BackwardsTimeOffsetSeconds();
-}
-
 static time_t (*orig_time)(time_t *);
 static time_t bt_time(time_t *t) {
     static volatile int touched = 0;
@@ -108,21 +93,6 @@ static time_t bt_time(time_t *t) {
         orig_time = (time_t (*)(time_t *))dlsym(RTLD_NEXT, "time");
     }
     time_t now = orig_time ? orig_time(NULL) : 0;
-    time_t adjusted = now - (time_t)BackwardsTimeOffsetSeconds();
-    if (t) {
-        *t = adjusted;
-    }
-    return adjusted;
-}
-
-static time_t (*orig___time)(time_t *);
-static time_t bt___time(time_t *t) {
-    static volatile int touched = 0;
-    BackwardsTimeTouchOnce(&touched, "backwardstime_hit___time");
-    if (!orig___time) {
-        orig___time = (time_t (*)(time_t *))dlsym(RTLD_NEXT, "__time");
-    }
-    time_t now = orig___time ? orig___time(NULL) : 0;
     time_t adjusted = now - (time_t)BackwardsTimeOffsetSeconds();
     if (t) {
         *t = adjusted;
@@ -151,27 +121,6 @@ static int bt_gettimeofday(struct timeval *tv, void *tz) {
     return result;
 }
 
-static int (*orig___gettimeofday)(struct timeval *, void *);
-static int bt___gettimeofday(struct timeval *tv, void *tz) {
-    static volatile int touched = 0;
-    BackwardsTimeTouchOnce(&touched, "backwardstime_hit___gettimeofday");
-    if (!orig___gettimeofday) {
-        orig___gettimeofday = (int (*)(struct timeval *, void *))dlsym(RTLD_NEXT, "__gettimeofday");
-    }
-    int result = orig___gettimeofday ? orig___gettimeofday(tv, tz) : -1;
-    if (result == 0 && tv) {
-        long long usec = (long long)tv->tv_sec * 1000000LL + (long long)tv->tv_usec;
-        usec -= (long long)(BackwardsTimeOffsetSeconds() * 1000000.0);
-        tv->tv_sec = (time_t)(usec / 1000000LL);
-        tv->tv_usec = (suseconds_t)(usec % 1000000LL);
-        if (tv->tv_usec < 0) {
-            tv->tv_usec += 1000000;
-            tv->tv_sec -= 1;
-        }
-    }
-    return result;
-}
-
 static int (*orig_clock_gettime)(clockid_t, struct timespec *);
 static int bt_clock_gettime(clockid_t clk_id, struct timespec *tp) {
     static volatile int touched = 0;
@@ -180,33 +129,6 @@ static int bt_clock_gettime(clockid_t clk_id, struct timespec *tp) {
         orig_clock_gettime = (int (*)(clockid_t, struct timespec *))dlsym(RTLD_NEXT, "clock_gettime");
     }
     int result = orig_clock_gettime ? orig_clock_gettime(clk_id, tp) : -1;
-    if (result == 0 && tp) {
-        if (clk_id == CLOCK_REALTIME
-#ifdef CLOCK_REALTIME_COARSE
-            || clk_id == CLOCK_REALTIME_COARSE
-#endif
-        ) {
-            long long nsec = (long long)tp->tv_sec * 1000000000LL + (long long)tp->tv_nsec;
-            nsec -= (long long)(BackwardsTimeOffsetSeconds() * 1000000000.0);
-            tp->tv_sec = (time_t)(nsec / 1000000000LL);
-            tp->tv_nsec = (long)(nsec % 1000000000LL);
-            if (tp->tv_nsec < 0) {
-                tp->tv_nsec += 1000000000L;
-                tp->tv_sec -= 1;
-            }
-        }
-    }
-    return result;
-}
-
-static int (*orig___clock_gettime)(clockid_t, struct timespec *);
-static int bt___clock_gettime(clockid_t clk_id, struct timespec *tp) {
-    static volatile int touched = 0;
-    BackwardsTimeTouchOnce(&touched, "backwardstime_hit___clock_gettime");
-    if (!orig___clock_gettime) {
-        orig___clock_gettime = (int (*)(clockid_t, struct timespec *))dlsym(RTLD_NEXT, "__clock_gettime");
-    }
-    int result = orig___clock_gettime ? orig___clock_gettime(clk_id, tp) : -1;
     if (result == 0 && tp) {
         if (clk_id == CLOCK_REALTIME
 #ifdef CLOCK_REALTIME_COARSE
@@ -258,13 +180,9 @@ static uint64_t bt_clock_gettime_nsec_np(clockid_t clk_id) {
     };
 
 DYLD_INTERPOSE(bt_CFAbsoluteTimeGetCurrent, CFAbsoluteTimeGetCurrent)
-DYLD_INTERPOSE(bt__CFAbsoluteTimeGetCurrent, _CFAbsoluteTimeGetCurrent)
 DYLD_INTERPOSE(bt_time, time)
-DYLD_INTERPOSE(bt___time, __time)
 DYLD_INTERPOSE(bt_gettimeofday, gettimeofday)
-DYLD_INTERPOSE(bt___gettimeofday, __gettimeofday)
 DYLD_INTERPOSE(bt_clock_gettime, clock_gettime)
-DYLD_INTERPOSE(bt___clock_gettime, __clock_gettime)
 DYLD_INTERPOSE(bt_clock_gettime_nsec_np, clock_gettime_nsec_np)
 
 __attribute__((constructor))
