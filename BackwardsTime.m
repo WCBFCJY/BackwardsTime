@@ -29,6 +29,7 @@ extern kern_return_t clock_get_time(clock_serv_t, mach_timespec_t *);
 
 static void BackwardsTimeTouchFile(const char *fileName);
 static void BackwardsTimeTouchOnce(volatile int *flag, const char *fileName);
+static void BackwardsTimeWriteOnce(volatile int *flag, const char *fileName, const char *content);
 
 static NSTimeInterval BackwardsTimeOffsetSeconds(void) {
     return 1000.0 * 24.0 * 60.0 * 60.0;
