@@ -26,6 +26,7 @@ jobs:
             -miphoneos-version-min=14.0 \
             -fobjc-arc \
             -framework Foundation \
+            -framework CoreFoundation \
             -dynamiclib \
             -Wl,-install_name,@rpath/BackwardsTime.dylib \
             -o dist/BackwardsTime.dylib \
