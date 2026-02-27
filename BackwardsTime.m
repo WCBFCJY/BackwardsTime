@@ -18,6 +18,7 @@
 
 typedef double CFAbsoluteTime;
 extern CFAbsoluteTime CFAbsoluteTimeGetCurrent(void);
+extern NSTimeInterval NSTimeIntervalSince1970;
 extern time_t time(time_t *);
 extern int gettimeofday(struct timeval *, void *);
 extern int clock_gettime(clockid_t, struct timespec *);
@@ -79,8 +80,50 @@ static NSDate *bt_NSDate_now(id self, SEL _cmd) {
     return adjusted;
 }
 
+static NSTimeInterval (*orig_NSDate_timeIntervalSinceReferenceDate)(id self, SEL _cmd);
+static NSTimeInterval bt_NSDate_timeIntervalSinceReferenceDate(id self, SEL _cmd) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSDate_timeIntervalSinceReferenceDate");
+    NSTimeInterval real = orig_NSDate_timeIntervalSinceReferenceDate ? orig_NSDate_timeIntervalSinceReferenceDate(self, _cmd) : 0;
+    return real - BackwardsTimeOffsetSeconds();
+}
+
+static id (*orig___NSDate_init)(id self, SEL _cmd);
+static id bt___NSDate_init(id self, SEL _cmd) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit___NSDate_init");
+    id real = orig___NSDate_init ? orig___NSDate_init(self, _cmd) : self;
+    if (![real isKindOfClass:[NSDate class]]) {
+        return real;
+    }
+    return [(NSDate *)real dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
+}
+
+static id (*orig_NSConcreteDate_init)(id self, SEL _cmd);
+static id bt_NSConcreteDate_init(id self, SEL _cmd) {
+    static volatile int touched = 0;
+    BackwardsTimeTouchOnce(&touched, "backwardstime_hit_NSConcreteDate_init");
+    id real = orig_NSConcreteDate_init ? orig_NSConcreteDate_init(self, _cmd) : self;
+    if (![real isKindOfClass:[NSDate class]]) {
+        return real;
+    }
+    return [(NSDate *)real dateByAddingTimeInterval:-BackwardsTimeOffsetSeconds()];
+}
+
 static void HookClassMethod(Class cls, SEL selector, IMP replacement, IMP *originalOut) {
     Method method = class_getClassMethod(cls, selector);
+    if (!method) {
+        return;
+    }
+
+    IMP previous = method_setImplementation(method, replacement);
+    if (originalOut) {
+        *originalOut = previous;
+    }
+}
+
+static void HookInstanceMethod(Class cls, SEL selector, IMP replacement, IMP *originalOut) {
+    Method method = class_getInstanceMethod(cls, selector);
     if (!method) {
         return;
     }
@@ -403,6 +446,18 @@ static void BackwardsTimeInit(void) {
         Class meta = object_getClass((id)nsDateClass);
         if (meta && class_respondsToSelector(meta, @selector(now))) {
             HookClassMethod(nsDateClass, @selector(now), (IMP)bt_NSDate_now, (IMP *)&orig_NSDate_now);
+        }
+
+        HookClassMethod(nsDateClass, @selector(timeIntervalSinceReferenceDate), (IMP)bt_NSDate_timeIntervalSinceReferenceDate, (IMP *)&orig_NSDate_timeIntervalSinceReferenceDate);
+
+        Class concrete = objc_getClass("__NSDate");
+        if (concrete) {
+            HookInstanceMethod(concrete, @selector(init), (IMP)bt___NSDate_init, (IMP *)&orig___NSDate_init);
+        }
+
+        Class concrete2 = objc_getClass("NSConcreteDate");
+        if (concrete2) {
+            HookInstanceMethod(concrete2, @selector(init), (IMP)bt_NSConcreteDate_init, (IMP *)&orig_NSConcreteDate_init);
         }
     }
 }
